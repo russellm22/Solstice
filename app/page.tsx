@@ -129,54 +129,10 @@ export default function Home() {
     setNumPages(numPages);
     setPageNumber(1);
     
-    // If we have pending diffs, wait a bit for the page to render, then set them
-    // Don't check diffMode here - it might not be updated yet due to async state updates
+    // Don't set diffs here - let the useEffect handle it
+    // This avoids race conditions between onDocumentLoadSuccess and useEffect
     if (pendingDiffsRef.current) {
-      console.log('PDF Document loaded, waiting for page render before setting diffs...');
-      console.log('Pending diffs count:', pendingDiffsRef.current.length);
-      
-      // Wait for the page element and canvas to be ready
-      const waitForPageRender = async () => {
-        let attempts = 0;
-        while (attempts < 30) {
-          const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
-          const canvas = pageElement?.querySelector('canvas');
-          const textLayer = pageElement?.querySelector('.react-pdf__Page__textContent');
-          
-          console.log(`Attempt ${attempts + 1}: pageElement:`, !!pageElement, 'canvas:', !!canvas, 'canvas.width:', canvas?.width, 'textLayer:', !!textLayer);
-          
-          if (pageElement && canvas && canvas.width > 0 && textLayer) {
-            const diffs = pendingDiffsRef.current;
-            if (diffs) {
-              console.log('✓ Page rendered, setting pending diffs:', diffs.length);
-              setTextDiffs(diffs);
-              setDiffsReady(true);
-              setDiffRenderKey(prev => prev + 1);
-              pendingDiffsRef.current = null;
-              return;
-            }
-          }
-          
-          await new Promise(resolve => setTimeout(resolve, 100));
-          attempts++;
-        }
-        
-        // Fallback: set diffs anyway after timeout
-        const diffs = pendingDiffsRef.current;
-        if (diffs) {
-          console.log('⚠ Timeout reached, setting diffs anyway:', diffs.length);
-          setTextDiffs(diffs);
-          setDiffsReady(true);
-          setDiffRenderKey(prev => prev + 1);
-          pendingDiffsRef.current = null;
-        } else {
-          console.log('⚠ Timeout reached but no diffs to set');
-        }
-      };
-      
-      waitForPageRender();
-    } else {
-      console.log('No pending diffs to set');
+      console.log('✓ PDF Document loaded, useEffect will handle setting diffs');
     }
   };
 
@@ -1298,50 +1254,48 @@ export default function Home() {
       // Force a reload by clearing and resetting fileUrl to trigger onDocumentLoadSuccess
       console.log('✓ Forcing PDF reload to trigger onDocumentLoadSuccess...');
       setFileUrl(null);
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 200));
       setFileUrl(dataUrl2);
       setCurrentVersion(v2);
       
-      // Also wait and set diffs directly as a backup
-      // This ensures diffs are set even if onDocumentLoadSuccess doesn't fire
-      const waitAndSetDiffs = async () => {
-        // Wait a bit for the Document to mount
-        await new Promise(resolve => setTimeout(resolve, 300));
-        
-        let attempts = 0;
-        while (attempts < 50) {
-          const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
-          const canvas = pageElement?.querySelector('canvas');
-          const textLayer = pageElement?.querySelector('.react-pdf__Page__textContent');
-          
-          if (pageElement && canvas && canvas.width > 0 && textLayer) {
-            const diffs = pendingDiffsRef.current;
-            if (diffs) {
-              console.log('✓ PDF ready, setting diffs directly:', diffs.length);
-              setTextDiffs(diffs);
-              setDiffsReady(true);
-              setDiffRenderKey(prev => prev + 1);
-              pendingDiffsRef.current = null;
-              return;
-            }
-          }
-          
-          await new Promise(resolve => setTimeout(resolve, 100));
-          attempts++;
-        }
-        
-        // Fallback: set diffs anyway
-        const diffs = pendingDiffsRef.current;
-        if (diffs) {
-          console.log('⚠ Timeout: Setting diffs anyway:', diffs.length);
-          setTextDiffs(diffs);
-          setDiffsReady(true);
-          setDiffRenderKey(prev => prev + 1);
-          pendingDiffsRef.current = null;
-        }
-      };
+      // Wait for PDF to load and then set diffs directly
+      // This is more reliable than relying on useEffect timing
+      console.log('✓ Waiting for PDF to load and setting diffs...');
+      await new Promise(resolve => setTimeout(resolve, 500));
       
-      waitAndSetDiffs();
+      let attempts = 0;
+      while (attempts < 60) {
+        const docElement = pageContainerRef.current?.querySelector('.react-pdf__Document');
+        const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
+        const canvas = pageElement?.querySelector('canvas');
+        const textLayer = pageElement?.querySelector('.react-pdf__Page__textContent');
+        
+        if (docElement && pageElement && canvas && canvas.width > 0 && canvas.height > 0 && textLayer) {
+          const spans = textLayer.querySelectorAll('span');
+          if (spans.length > 0 && pendingDiffsRef.current) {
+            const diffs = pendingDiffsRef.current;
+            console.log('✓ PDF ready, setting diffs directly:', diffs.length);
+            setTextDiffs(diffs);
+            setDiffsReady(true);
+            setDiffRenderKey(prev => prev + 1);
+            pendingDiffsRef.current = null;
+            break;
+          }
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 100));
+        attempts++;
+      }
+      
+      // Fallback: set diffs anyway
+      if (pendingDiffsRef.current) {
+        const diffs = pendingDiffsRef.current;
+        console.log('⚠ Setting diffs as fallback:', diffs.length);
+        setTextDiffs(diffs);
+        setDiffsReady(true);
+        setDiffRenderKey(prev => prev + 1);
+        pendingDiffsRef.current = null;
+      }
       
       // Don't restore original - show version 2 with diffs
       
@@ -1734,6 +1688,100 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diffMode, diffVersions.v1, diffVersions.v2, isMounted]);
   
+  // Watch for when diffMode is enabled and fileUrl is set, then ensure diffs are set
+  // This handles the case where onDocumentLoadSuccess fires before diffs are ready
+  // or when the PDF loads after diffs are calculated
+  useEffect(() => {
+    if (!diffMode || !fileUrl || !pendingDiffsRef.current) {
+      console.log('useEffect: Conditions not met', { diffMode, hasFileUrl: !!fileUrl, hasPendingDiffs: !!pendingDiffsRef.current });
+      return;
+    }
+    
+    console.log('🔍 useEffect: diffMode and fileUrl set, checking for pending diffs...', {
+      diffMode,
+      fileUrl: fileUrl.substring(0, 50) + '...',
+      pendingDiffsCount: pendingDiffsRef.current.length
+    });
+    
+    let isCancelled = false;
+    
+    const checkAndSetDiffs = async () => {
+      // Wait for React to update and Document to mount
+      await new Promise(resolve => setTimeout(resolve, 800));
+      
+      let attempts = 0;
+      const maxAttempts = 100; // 10 seconds total - increased for slower systems
+      
+      while (attempts < maxAttempts && !isCancelled) {
+        // Check if diffs were already set
+        if (!pendingDiffsRef.current) {
+          console.log('✓ Diffs already set');
+          return;
+        }
+        
+        // First check if Document element exists
+        const docElement = pageContainerRef.current?.querySelector('.react-pdf__Document');
+        const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
+        const canvas = pageElement?.querySelector('canvas');
+        const textLayer = pageElement?.querySelector('.react-pdf__Page__textContent');
+        
+        if (attempts % 10 === 0 || attempts < 5) {
+          console.log(`Attempt ${attempts + 1}/${maxAttempts}:`, {
+            hasDocElement: !!docElement,
+            hasPageElement: !!pageElement,
+            hasCanvas: !!canvas,
+            canvasWidth: canvas?.width,
+            canvasHeight: canvas?.height,
+            hasTextLayer: !!textLayer,
+            spanCount: textLayer?.querySelectorAll('span').length || 0,
+            pendingDiffs: pendingDiffsRef.current?.length || 0
+          });
+        }
+        
+        // Check if PDF is fully rendered - need Document, Page, canvas with content AND text layer with spans
+        if (docElement && pageElement && canvas && canvas.width > 0 && canvas.height > 0 && textLayer) {
+          // Also check that text layer has content
+          const spans = textLayer.querySelectorAll('span');
+          if (spans.length > 0) {
+            const diffs = pendingDiffsRef.current;
+            if (diffs && diffs.length > 0 && !isCancelled) {
+              console.log('✓ useEffect: PDF fully rendered, setting diffs:', diffs.length);
+              setTextDiffs(diffs);
+              setDiffsReady(true);
+              setDiffRenderKey(prev => prev + 1);
+              pendingDiffsRef.current = null;
+              return;
+            }
+          }
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 100));
+        attempts++;
+      }
+      
+      // Fallback: set diffs anyway after timeout (only if not cancelled and still pending)
+      if (!isCancelled && pendingDiffsRef.current) {
+        const diffs = pendingDiffsRef.current;
+        if (diffs && diffs.length > 0) {
+          console.log('⚠ useEffect: Timeout reached, setting diffs anyway:', diffs.length);
+          setTextDiffs(diffs);
+          setDiffsReady(true);
+          setDiffRenderKey(prev => prev + 1);
+          pendingDiffsRef.current = null;
+        }
+      } else if (!isCancelled) {
+        console.log('⚠ useEffect: Timeout reached but no pending diffs');
+      }
+    };
+    
+    checkAndSetDiffs();
+    
+    // Cleanup: cancel if component unmounts or dependencies change
+    return () => {
+      isCancelled = true;
+    };
+  }, [diffMode, fileUrl]);
+
   // Force re-render of diff overlay when PDF loads (fileUrl changes)
   // This ensures diffs appear even if PDF wasn't ready when they were first set
   useEffect(() => {
@@ -2925,8 +2973,32 @@ export default function Home() {
                     <div 
                       key={`diff-overlay-${diffRenderKey}`} 
                       className="absolute inset-0 pointer-events-none" 
-                      style={{ zIndex: 30 }}
+                      style={{ 
+                        zIndex: 9999,
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        pointerEvents: 'none'
+                      }}
                     >
+                      {/* Invisible test overlay to ensure overlay container is created */}
+                      {filteredDiffs.length > 0 && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: '0px',
+                            top: '0px',
+                            width: '1px',
+                            height: '1px',
+                            opacity: 0,
+                            pointerEvents: 'none',
+                            zIndex: 10000
+                          }}
+                          aria-hidden="true"
+                        />
+                      )}
                       {filteredDiffs.map((diff, index) => {
                         // diff.x and diff.y are relative to the page element (from extractTextFromCurrentPdf)
                         // The page is inside a transformed div, but getBoundingClientRect() already accounts for transforms
@@ -2937,30 +3009,42 @@ export default function Home() {
                           type: diff.type,
                           text: diff.text.substring(0, 30),
                           diffCoords: { x: diff.x, y: diff.y, width: diff.width, height: diff.height },
-                          finalCoords: { left, top, width: diff.width, height: diff.height }
+                          finalCoords: { left, top, width: diff.width, height: diff.height },
+                          pageX,
+                          pageY,
+                          containerRect: { left: containerRect.left, top: containerRect.top, width: containerRect.width, height: containerRect.height },
+                          pageRect: { left: pageRect.left, top: pageRect.top, width: pageRect.width, height: pageRect.height }
                         });
+                        
+                        // Ensure coordinates are valid
+                        if (isNaN(left) || isNaN(top) || left < -1000 || top < -1000 || left > 10000 || top > 10000) {
+                          console.warn(`⚠ Invalid coordinates for diff ${index}:`, { left, top });
+                          return null;
+                        }
                         
                         return (
                           <div
                             key={`diff-${index}`}
                             className="absolute pointer-events-none"
                             style={{
+                              position: 'absolute',
                               left: `${left}px`,
                               top: `${top}px`,
                               width: `${Math.max(diff.width, 10)}px`,
                               height: `${Math.max(diff.height, 10)}px`,
                               backgroundColor:
-                                diff.type === 'added' ? (diff.isAnnotation ? 'rgba(34, 197, 94, 0.6)' : 'rgba(34, 197, 94, 0.5)') :
-                                diff.type === 'deleted' ? (diff.isAnnotation ? 'rgba(239, 68, 68, 0.6)' : 'rgba(239, 68, 68, 0.5)') :
-                                (diff.isAnnotation ? 'rgba(251, 191, 36, 0.6)' : 'rgba(251, 191, 36, 0.5)'),
+                                diff.type === 'added' ? (diff.isAnnotation ? 'rgba(34, 197, 94, 0.7)' : 'rgba(34, 197, 94, 0.6)') :
+                                diff.type === 'deleted' ? (diff.isAnnotation ? 'rgba(239, 68, 68, 0.7)' : 'rgba(239, 68, 68, 0.6)') :
+                                (diff.isAnnotation ? 'rgba(251, 191, 36, 0.7)' : 'rgba(251, 191, 36, 0.6)'),
                               border: `3px ${diff.isAnnotation ? 'dashed' : 'solid'} ${
                                 diff.type === 'added' ? '#22c55e' :
                                 diff.type === 'deleted' ? '#ef4444' :
                                 '#fbbf24'
                               }`,
                               borderRadius: '2px',
-                              zIndex: 30,
-                              boxShadow: '0 0 6px rgba(0,0,0,0.4)',
+                              zIndex: 50,
+                              boxShadow: '0 0 8px rgba(0,0,0,0.5)',
+                              pointerEvents: 'none',
                             }}
                             title={`${diff.type === 'added' ? 'Added' : diff.type === 'deleted' ? 'Deleted' : 'Modified'}: ${diff.text}`}
                           />
