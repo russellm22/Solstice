@@ -91,6 +91,7 @@ export default function Home() {
     width: number;
     height: number;
   }>>([]);
+  const [diffsReady, setDiffsReady] = useState(false);
   const pageContainerRef = useRef<HTMLDivElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
   const annotationCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -225,8 +226,15 @@ export default function Home() {
       const helveticaFont = await exportedPdf.embedFont(StandardFonts.Helvetica);
       const helveticaBoldFont = await exportedPdf.embedFont(StandardFonts.HelveticaBold);
       
-      // Create Change Log page (insert at front)
-      const changeLogPage = exportedPdf.addPage([612, 792]); // Letter size
+      // Copy all pages from latest version first
+      const pageIndices = sourcePdf.getPageIndices();
+      for (let i = 0; i < pageIndices.length; i++) {
+        const [copiedPage] = await exportedPdf.copyPages(sourcePdf, [i]);
+        exportedPdf.addPage(copiedPage);
+      }
+      
+      // Create Change Log page (will insert at front after drawing)
+      const changeLogPage = exportedPdf.insertPage(0, [612, 792]); // Letter size, inserted at beginning
       const { width, height } = changeLogPage.getSize();
       
       // Title
@@ -243,18 +251,22 @@ export default function Home() {
       const lineHeight = 60;
       const margin = 50;
       const contentWidth = width - (margin * 2);
+      let currentChangeLogPage = changeLogPage;
+      let changeLogPageIndex = 0;
       
       versions.forEach((version, index) => {
         if (yPos < 100) {
-          // Add new page if needed
-          const newPage = exportedPdf.addPage([612, 792]);
-          changeLogPage.drawText('(continued)', {
+          // Add new continuation page right after current change log page
+          const newPage = exportedPdf.insertPage(changeLogPageIndex + 1, [612, 792]);
+          currentChangeLogPage.drawText('(continued)', {
             x: margin,
             y: 50,
             size: 10,
             font: helveticaFont,
             color: rgb(0.5, 0.5, 0.5),
           });
+          currentChangeLogPage = newPage;
+          changeLogPageIndex++;
           yPos = height - 50;
         }
         
@@ -262,7 +274,7 @@ export default function Home() {
         const versionText = `V${version.version}`;
         const dateText = version.timestamp.toLocaleDateString() + ' ' + version.timestamp.toLocaleTimeString();
         
-        changeLogPage.drawText(versionText, {
+        currentChangeLogPage.drawText(versionText, {
           x: margin,
           y: yPos,
           size: 14,
@@ -270,7 +282,7 @@ export default function Home() {
           color: rgb(0, 0, 0),
         });
         
-        changeLogPage.drawText(dateText, {
+        currentChangeLogPage.drawText(dateText, {
           x: margin + 80,
           y: yPos,
           size: 10,
@@ -281,7 +293,7 @@ export default function Home() {
         // Message (wrap text)
         const messageLines = wrapText(version.message, contentWidth - 100, helveticaFont, 10);
         messageLines.forEach((line, lineIndex) => {
-          changeLogPage.drawText(line, {
+          currentChangeLogPage.drawText(line, {
             x: margin + 20,
             y: yPos - 20 - (lineIndex * 12),
             size: 10,
@@ -290,30 +302,72 @@ export default function Home() {
           });
         });
         
-        // Annotation count
+        // List annotations
         const annotationCount = version.annotations?.length || 0;
+        let annotationYPos = yPos - 20 - (messageLines.length * 12) - 5;
+        
         if (annotationCount > 0) {
-          changeLogPage.drawText(`${annotationCount} annotation${annotationCount !== 1 ? 's' : ''}`, {
+          currentChangeLogPage.drawText(`Annotations (${annotationCount}):`, {
             x: margin + 20,
-            y: yPos - 20 - (messageLines.length * 12) - 5,
+            y: annotationYPos,
             size: 9,
-            font: helveticaFont,
+            font: helveticaBoldFont,
             color: rgb(0.3, 0.3, 0.3),
+          });
+          annotationYPos -= 12;
+          
+          version.annotations?.forEach((annotation, annIndex) => {
+            // Check if we need a new page for annotations
+            if (annotationYPos < 80) {
+              const newPage = exportedPdf.insertPage(changeLogPageIndex + 1, [612, 792]);
+              currentChangeLogPage.drawText('(continued)', {
+                x: margin,
+                y: 50,
+                size: 10,
+                font: helveticaFont,
+                color: rgb(0.5, 0.5, 0.5),
+              });
+              currentChangeLogPage = newPage;
+              changeLogPageIndex++;
+              annotationYPos = height - 50;
+            }
+            
+            const annotationLabel = `  • V${version.version}-#${annIndex + 1}: ${getAnnotationTypeLabel(annotation.type)}`;
+            const annotationDetails = annotation.text 
+              ? ` (Page ${annotation.page}, "${annotation.text.substring(0, 30)}${annotation.text.length > 30 ? '...' : ''}")`
+              : ` (Page ${annotation.page})`;
+            
+            // Draw annotation label
+            currentChangeLogPage.drawText(annotationLabel, {
+              x: margin + 30,
+              y: annotationYPos,
+              size: 8,
+              font: helveticaFont,
+              color: rgb(0.2, 0.2, 0.2),
+            });
+            
+            // Draw annotation details on next line if there's text
+            if (annotation.text) {
+              annotationYPos -= 10;
+              const detailsLines = wrapText(annotationDetails, contentWidth - 120, helveticaFont, 8);
+              detailsLines.forEach((line, lineIdx) => {
+                currentChangeLogPage.drawText(line, {
+                  x: margin + 40,
+                  y: annotationYPos - (lineIdx * 10),
+                  size: 8,
+                  font: helveticaFont,
+                  color: rgb(0.4, 0.4, 0.4),
+                });
+              });
+              annotationYPos -= (detailsLines.length * 10);
+            }
+            
+            annotationYPos -= 8;
           });
         }
         
-        yPos -= (messageLines.length * 12) + (annotationCount > 0 ? 20 : 0) + 40;
+        yPos = annotationYPos - 20;
       });
-      
-      // Copy all pages from latest version
-      const pageIndices = sourcePdf.getPageIndices();
-      for (let i = 0; i < pageIndices.length; i++) {
-        const [copiedPage] = await exportedPdf.copyPages(sourcePdf, [i]);
-        exportedPdf.addPage(copiedPage);
-      }
-      
-      // Insert change log page at the beginning (after copying all pages)
-      exportedPdf.insertPage(0, changeLogPage);
       
       // Add callouts to pages based on version annotations
       versions.forEach((version) => {
@@ -462,6 +516,7 @@ export default function Home() {
       if (diffMode) {
         setDiffMode(false);
         setTextDiffs([]);
+        setDiffsReady(false);
       }
       
     } catch (error) {
@@ -735,6 +790,7 @@ export default function Home() {
         setDiffMode(false);
         setDiffVersions({ v1: null, v2: null });
         setTextDiffs([]);
+        setDiffsReady(false);
         return;
       }
       
@@ -1090,10 +1146,43 @@ export default function Home() {
       
       console.log('Found', diffHighlights.length, 'differences');
       
+      // Ensure version 2 is fully loaded and rendered before setting diffs
+      // Wait a bit more to ensure the PDF is fully rendered
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Verify the PDF is still loaded
+      const finalPageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
+      const finalCanvas = finalPageElement?.querySelector('canvas');
+      if (!finalCanvas || finalCanvas.width === 0) {
+        console.warn('PDF not fully rendered when setting diffs, waiting more...');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      
       // Keep version 2 loaded (newer version)
-      setTextDiffs(diffHighlights);
-      setDiffMode(true);
+      // Set diffs and mode together to ensure proper rendering
       setDiffVersions({ v1, v2 });
+      setDiffMode(true);
+      setDiffsReady(false); // Mark as not ready yet
+      
+      // Wait for PDF to be fully rendered before showing diffs
+      // Use requestAnimationFrame to ensure DOM is updated
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          // Verify PDF is ready
+          const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
+          const canvas = pageElement?.querySelector('canvas');
+          if (canvas && canvas.width > 0) {
+            setTextDiffs(diffHighlights);
+            setDiffsReady(true);
+          } else {
+            // If not ready, wait a bit more
+            setTimeout(() => {
+              setTextDiffs(diffHighlights);
+              setDiffsReady(true);
+            }, 300);
+          }
+        });
+      });
       
       // Don't restore original - show version 2 with diffs
       
@@ -2288,6 +2377,7 @@ export default function Home() {
                                   // Reset and select new first version
                                   setDiffVersions({ v1: version.version, v2: null });
                                   setTextDiffs([]);
+                                  setDiffsReady(false);
                                 }
                               } else {
                                 switchVersion(version.version);
@@ -2346,6 +2436,7 @@ export default function Home() {
                           setDiffMode(false);
                           setDiffVersions({ v1: null, v2: null });
                           setTextDiffs([]);
+                          setDiffsReady(false);
                         } else {
                           setDiffMode(true);
                           setDiffVersions({ v1: null, v2: null });
@@ -2371,6 +2462,7 @@ export default function Home() {
                             onClick={() => {
                               setDiffVersions({ v1: null, v2: null });
                               setTextDiffs([]);
+                              setDiffsReady(false);
                             }}
                             className="px-2 py-1 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
                           >
@@ -2479,7 +2571,7 @@ export default function Home() {
                 )}
 
                 {/* Diff Overlay */}
-                {diffMode && textDiffs.length > 0 && (
+                {diffMode && diffsReady && textDiffs.length > 0 && (
                   <>
                     {textDiffs.map((diff, index) => {
                       // Get the page element to calculate correct position
@@ -2490,22 +2582,20 @@ export default function Home() {
                       if (!pageRect || !containerRect) return null;
                       
                       // diff.x and diff.y are relative to the page element (from extractTextFromCurrentPdf)
-                      // The page is already scaled and positioned, so we need to:
-                      // 1. Get page position relative to container
-                      // 2. Add the diff coordinates (already account for scale in page rendering)
-                      // 3. Add pan offset
+                      // The page is inside a transformed div, so getBoundingClientRect() already includes the pan offset
+                      // We just need to get the page position relative to container and add diff coordinates
                       const pageX = pageRect.left - containerRect.left;
                       const pageY = pageRect.top - containerRect.top;
                       
                       // The coordinates from extractTextFromCurrentPdf are already in screen pixels
-                      // at the current scale, so we just need to add page offset and pan
+                      // at the current scale. pageRect already accounts for the transform, so don't add position.x/y again
                       return (
                         <div
                           key={index}
                           className="absolute z-30 pointer-events-none"
                           style={{
-                            left: `${pageX + diff.x + position.x}px`,
-                            top: `${pageY + diff.y + position.y}px`,
+                            left: `${pageX + diff.x}px`,
+                            top: `${pageY + diff.y}px`,
                             width: `${diff.width}px`,
                             height: `${diff.height}px`,
                             backgroundColor:
