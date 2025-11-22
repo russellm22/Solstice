@@ -1283,9 +1283,8 @@ export default function Home() {
       
       console.log('Found', diffHighlights.length, 'differences (text + annotations)');
       
-      // Keep version 2 loaded (newer version)
-      // Store diffs FIRST in ref before changing fileUrl
-      // This ensures they're available when onDocumentLoadSuccess fires
+      // Store diffs in ref FIRST, before any state updates
+      // This ensures they're available when onDocumentLoadSuccess fires (if it fires again)
       pendingDiffsRef.current = diffHighlights;
       console.log('✓ Diffs stored in ref:', diffHighlights.length, 'highlights');
       
@@ -1294,27 +1293,55 @@ export default function Home() {
       setDiffMode(true);
       setDiffsReady(false);
       
-      console.log('✓ Diff mode set to true, fileUrl will change to trigger PDF reload');
+      // fileUrl should already be set to dataUrl2 from earlier in the function
+      // But we need to ensure the PDF is fully loaded and then set the diffs
+      // Force a reload by clearing and resetting fileUrl to trigger onDocumentLoadSuccess
+      console.log('✓ Forcing PDF reload to trigger onDocumentLoadSuccess...');
+      setFileUrl(null);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      setFileUrl(dataUrl2);
+      setCurrentVersion(v2);
       
-      // Wait a moment for state to update, then check if PDF is already loaded
-      setTimeout(() => {
-        if (pendingDiffsRef.current) {
+      // Also wait and set diffs directly as a backup
+      // This ensures diffs are set even if onDocumentLoadSuccess doesn't fire
+      const waitAndSetDiffs = async () => {
+        // Wait a bit for the Document to mount
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        let attempts = 0;
+        while (attempts < 50) {
           const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
           const canvas = pageElement?.querySelector('canvas');
-          if (pageElement && canvas && canvas.width > 0) {
-            console.log('✓ PDF already loaded, setting diffs immediately');
+          const textLayer = pageElement?.querySelector('.react-pdf__Page__textContent');
+          
+          if (pageElement && canvas && canvas.width > 0 && textLayer) {
             const diffs = pendingDiffsRef.current;
             if (diffs) {
+              console.log('✓ PDF ready, setting diffs directly:', diffs.length);
               setTextDiffs(diffs);
               setDiffsReady(true);
               setDiffRenderKey(prev => prev + 1);
               pendingDiffsRef.current = null;
+              return;
             }
-          } else {
-            console.log('PDF not ready yet, waiting for onDocumentLoadSuccess...');
           }
+          
+          await new Promise(resolve => setTimeout(resolve, 100));
+          attempts++;
         }
-      }, 500);
+        
+        // Fallback: set diffs anyway
+        const diffs = pendingDiffsRef.current;
+        if (diffs) {
+          console.log('⚠ Timeout: Setting diffs anyway:', diffs.length);
+          setTextDiffs(diffs);
+          setDiffsReady(true);
+          setDiffRenderKey(prev => prev + 1);
+          pendingDiffsRef.current = null;
+        }
+      };
+      
+      waitAndSetDiffs();
       
       // Don't restore original - show version 2 with diffs
       
@@ -2850,55 +2877,98 @@ export default function Home() {
                 )}
 
                 {/* Diff Overlay */}
-                {diffMode && textDiffs.length > 0 && (
-                  <div key={`diff-overlay-${diffRenderKey}`}>
-                    {textDiffs
-                      .filter(diff => !diff.page || diff.page === pageNumber) // Filter by current page for annotation diffs
-                      .map((diff, index) => {
-                      // Get the page element to calculate correct position
-                      const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
-                      const pageRect = pageElement?.getBoundingClientRect();
-                      const containerRect = pageContainerRef.current?.getBoundingClientRect();
-                      
-                      // If page isn't ready yet, return null (will render on next update when PDF loads)
-                      if (!pageRect || !containerRect || !pageElement) {
-                        return null;
-                      }
-                      
-                      // diff.x and diff.y are relative to the page element (from extractTextFromCurrentPdf)
-                      // The page is inside a transformed div, so getBoundingClientRect() already includes the pan offset
-                      // We just need to get the page position relative to container and add diff coordinates
-                      const pageX = pageRect.left - containerRect.left;
-                      const pageY = pageRect.top - containerRect.top;
-                      
-                      // The coordinates from extractTextFromCurrentPdf are already in screen pixels
-                      // at the current scale. pageRect already accounts for the transform, so don't add position.x/y again
-                      return (
-                        <div
-                          key={index}
-                          className="absolute z-30 pointer-events-none"
-                          style={{
-                            left: `${pageX + diff.x}px`,
-                            top: `${pageY + diff.y}px`,
-                            width: `${diff.width}px`,
-                            height: `${diff.height}px`,
-                            backgroundColor:
-                              diff.type === 'added' ? (diff.isAnnotation ? 'rgba(34, 197, 94, 0.4)' : 'rgba(34, 197, 94, 0.3)') :
-                              diff.type === 'deleted' ? (diff.isAnnotation ? 'rgba(239, 68, 68, 0.4)' : 'rgba(239, 68, 68, 0.3)') :
-                              (diff.isAnnotation ? 'rgba(251, 191, 36, 0.4)' : 'rgba(251, 191, 36, 0.3)'),
-                            border: `2px ${diff.isAnnotation ? 'dashed' : 'solid'} ${
-                              diff.type === 'added' ? '#22c55e' :
-                              diff.type === 'deleted' ? '#ef4444' :
-                              '#fbbf24'
-                            }`,
-                            borderRadius: '2px',
-                          }}
-                          title={`${diff.type === 'added' ? 'Added' : diff.type === 'deleted' ? 'Deleted' : 'Modified'}: ${diff.text}`}
-                        />
-                      );
-                    })}
-                  </div>
-                )}
+                {diffMode && textDiffs.length > 0 && (() => {
+                  const filteredDiffs = textDiffs.filter(diff => !diff.page || diff.page === pageNumber);
+                  
+                  console.log('🔍 Rendering diff overlay:', {
+                    diffMode,
+                    textDiffsLength: textDiffs.length,
+                    pageNumber,
+                    filteredDiffsCount: filteredDiffs.length,
+                    filteredDiffs: filteredDiffs.map(d => ({ type: d.type, text: d.text.substring(0, 20), x: d.x, y: d.y, width: d.width, height: d.height }))
+                  });
+                  
+                  if (filteredDiffs.length === 0) {
+                    console.log('⚠ No diffs for current page');
+                    return null;
+                  }
+                  
+                  // Get page element and container once
+                  const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
+                  const pageRect = pageElement?.getBoundingClientRect();
+                  const containerRect = pageContainerRef.current?.getBoundingClientRect();
+                  
+                  if (!pageRect || !containerRect || !pageElement) {
+                    console.log('⚠ Page element not ready yet', {
+                      hasPageElement: !!pageElement,
+                      hasPageRect: !!pageRect,
+                      hasContainerRect: !!containerRect
+                    });
+                    return null;
+                  }
+                  
+                  // Calculate page position relative to container
+                  // getBoundingClientRect() already accounts for CSS transforms
+                  const pageX = pageRect.left - containerRect.left;
+                  const pageY = pageRect.top - containerRect.top;
+                  
+                  console.log('📍 Position calculations:', {
+                    containerRect: { left: containerRect.left, top: containerRect.top, width: containerRect.width, height: containerRect.height },
+                    pageRect: { left: pageRect.left, top: pageRect.top, width: pageRect.width, height: pageRect.height },
+                    pageX,
+                    pageY,
+                    position: { x: position.x, y: position.y },
+                    scale
+                  });
+                  
+                  return (
+                    <div 
+                      key={`diff-overlay-${diffRenderKey}`} 
+                      className="absolute inset-0 pointer-events-none" 
+                      style={{ zIndex: 30 }}
+                    >
+                      {filteredDiffs.map((diff, index) => {
+                        // diff.x and diff.y are relative to the page element (from extractTextFromCurrentPdf)
+                        // The page is inside a transformed div, but getBoundingClientRect() already accounts for transforms
+                        const left = pageX + diff.x;
+                        const top = pageY + diff.y;
+                        
+                        console.log(`✓ Rendering diff ${index}:`, {
+                          type: diff.type,
+                          text: diff.text.substring(0, 30),
+                          diffCoords: { x: diff.x, y: diff.y, width: diff.width, height: diff.height },
+                          finalCoords: { left, top, width: diff.width, height: diff.height }
+                        });
+                        
+                        return (
+                          <div
+                            key={`diff-${index}`}
+                            className="absolute pointer-events-none"
+                            style={{
+                              left: `${left}px`,
+                              top: `${top}px`,
+                              width: `${Math.max(diff.width, 10)}px`,
+                              height: `${Math.max(diff.height, 10)}px`,
+                              backgroundColor:
+                                diff.type === 'added' ? (diff.isAnnotation ? 'rgba(34, 197, 94, 0.6)' : 'rgba(34, 197, 94, 0.5)') :
+                                diff.type === 'deleted' ? (diff.isAnnotation ? 'rgba(239, 68, 68, 0.6)' : 'rgba(239, 68, 68, 0.5)') :
+                                (diff.isAnnotation ? 'rgba(251, 191, 36, 0.6)' : 'rgba(251, 191, 36, 0.5)'),
+                              border: `3px ${diff.isAnnotation ? 'dashed' : 'solid'} ${
+                                diff.type === 'added' ? '#22c55e' :
+                                diff.type === 'deleted' ? '#ef4444' :
+                                '#fbbf24'
+                              }`,
+                              borderRadius: '2px',
+                              zIndex: 30,
+                              boxShadow: '0 0 6px rgba(0,0,0,0.4)',
+                            }}
+                            title={`${diff.type === 'added' ? 'Added' : diff.type === 'deleted' ? 'Deleted' : 'Modified'}: ${diff.text}`}
+                          />
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
 
                 {/* Text Edit Overlay */}
                 {editingPosition && editingStyles && (
