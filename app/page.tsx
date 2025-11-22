@@ -90,6 +90,8 @@ export default function Home() {
     y: number;
     width: number;
     height: number;
+    page?: number; // Optional page number for annotation diffs
+    isAnnotation?: boolean; // Flag to distinguish annotation diffs
   }>>([]);
   const [diffsReady, setDiffsReady] = useState(false);
   const pageContainerRef = useRef<HTMLDivElement>(null);
@@ -859,6 +861,8 @@ export default function Home() {
         y: number;
         width: number;
         height: number;
+        page?: number;
+        isAnnotation?: boolean;
       }> = [];
       
       // Build a map from character positions in joined string to spans
@@ -1144,7 +1148,75 @@ export default function Home() {
       
       console.log('Created', diffHighlights.length, 'highlights from', diffs.length, 'diff operations');
       
-      console.log('Found', diffHighlights.length, 'differences');
+      // Compare annotations between versions
+      const annotations1 = version1.annotations || [];
+      const annotations2 = version2.annotations || [];
+      
+      // Create maps for easier comparison (by id or by position+type)
+      const createAnnotationKey = (ann: typeof annotations1[0]) => {
+        // Use a combination of type, page, and approximate position as key
+        // Round coordinates to avoid floating point issues
+        const roundedX = Math.round(ann.x / 10) * 10;
+        const roundedY = Math.round(ann.y / 10) * 10;
+        return `${ann.type}-${ann.page}-${roundedX}-${roundedY}`;
+      };
+      
+      const annMap1 = new Map(annotations1.map(ann => [createAnnotationKey(ann), ann]));
+      const annMap2 = new Map(annotations2.map(ann => [createAnnotationKey(ann), ann]));
+      
+      // Find added annotations (in v2 but not in v1)
+      annotations2.forEach(ann => {
+        const key = createAnnotationKey(ann);
+        if (!annMap1.has(key)) {
+          console.log(`Added annotation: ${ann.type} on page ${ann.page}`);
+          diffHighlights.push({
+            type: 'added',
+            text: ann.text || `${ann.type} annotation`,
+            x: ann.x,
+            y: ann.y,
+            width: ann.width,
+            height: ann.height,
+            page: ann.page,
+            isAnnotation: true,
+          });
+        } else {
+          // Check if modified (different text or properties)
+          const ann1 = annMap1.get(key)!;
+          if (ann.text !== ann1.text || ann.width !== ann1.width || ann.height !== ann1.height) {
+            console.log(`Modified annotation: ${ann.type} on page ${ann.page}`);
+            diffHighlights.push({
+              type: 'modified',
+              text: ann.text || `${ann.type} annotation`,
+              x: ann.x,
+              y: ann.y,
+              width: ann.width,
+              height: ann.height,
+              page: ann.page,
+              isAnnotation: true,
+            });
+          }
+        }
+      });
+      
+      // Find deleted annotations (in v1 but not in v2)
+      annotations1.forEach(ann => {
+        const key = createAnnotationKey(ann);
+        if (!annMap2.has(key)) {
+          console.log(`Deleted annotation: ${ann.type} on page ${ann.page}`);
+          diffHighlights.push({
+            type: 'deleted',
+            text: ann.text || `${ann.type} annotation`,
+            x: ann.x,
+            y: ann.y,
+            width: ann.width,
+            height: ann.height,
+            page: ann.page,
+            isAnnotation: true,
+          });
+        }
+      });
+      
+      console.log('Found', diffHighlights.length, 'differences (text + annotations)');
       
       // Ensure version 2 is fully loaded and rendered before setting diffs
       // Wait a bit more to ensure the PDF is fully rendered
@@ -1337,7 +1409,8 @@ export default function Home() {
     }
     
     // Extract color - sample from the canvas since PDF.js renders color there
-    let textColor = computedStyle.color;
+    // Don't use computedStyle.color as initial value - it's often wrong (defaults to blue/black)
+    let textColor: string | null = null;
     
     // Try to get color from canvas by sampling the pixel at the text position
     const canvas = pageElement?.querySelector('canvas');
@@ -1345,37 +1418,100 @@ export default function Home() {
       try {
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          // Get canvas position relative to page
+          // Get canvas dimensions (actual vs displayed)
           const canvasRect = canvas.getBoundingClientRect();
-          const canvasX = Math.floor(rect.left - canvasRect.left);
-          const canvasY = Math.floor(rect.top - canvasRect.top);
+          const canvasWidth = canvas.width;
+          const canvasHeight = canvas.height;
+          const displayedWidth = canvasRect.width;
+          const displayedHeight = canvasRect.height;
           
-          // Sample a few pixels around the text center to get the color
-          const sampleSize = Math.max(1, Math.floor(rect.height / 2));
-          const centerX = canvasX + Math.floor(rect.width / 2);
-          const centerY = canvasY + Math.floor(rect.height / 2);
+          // Calculate scale factors
+          const scaleX = canvasWidth / displayedWidth;
+          const scaleY = canvasHeight / displayedHeight;
           
-          // Get image data from canvas
-          const imageData = ctx.getImageData(centerX, centerY, sampleSize, sampleSize);
-          const data = imageData.data;
+          // Get span position relative to canvas
+          const spanX = rect.left - canvasRect.left;
+          const spanY = rect.top - canvasRect.top;
           
-          // Calculate average color from sampled pixels
-          let r = 0, g = 0, b = 0, count = 0;
-          for (let i = 0; i < data.length; i += 4) {
-            // Skip transparent pixels
-            if (data[i + 3] > 0) {
-              r += data[i];
-              g += data[i + 1];
-              b += data[i + 2];
-              count++;
+          // Convert to canvas coordinates (accounting for scaling)
+          const canvasX = Math.floor(spanX * scaleX);
+          const canvasY = Math.floor(spanY * scaleY);
+          const canvasWidth_scaled = Math.floor(rect.width * scaleX);
+          const canvasHeight_scaled = Math.floor(rect.height * scaleY);
+          
+          // Sample a grid of pixels across the text area to get accurate color
+          // Sample more pixels in the center area (where text is most solid)
+          const sampleWidth = Math.max(1, Math.floor(canvasWidth_scaled * 0.8));
+          const sampleHeight = Math.max(1, Math.floor(canvasHeight_scaled * 0.6));
+          const startX = canvasX + Math.floor(canvasWidth_scaled * 0.1);
+          const startY = canvasY + Math.floor(canvasHeight_scaled * 0.2);
+          
+          // Ensure we're within bounds
+          const safeStartX = Math.max(0, Math.min(startX, canvasWidth - 1));
+          const safeStartY = Math.max(0, Math.min(startY, canvasHeight - 1));
+          const safeWidth = Math.min(sampleWidth, canvasWidth - safeStartX);
+          const safeHeight = Math.min(sampleHeight, canvasHeight - safeStartY);
+          
+          if (safeWidth > 0 && safeHeight > 0) {
+            const imageData = ctx.getImageData(safeStartX, safeStartY, safeWidth, safeHeight);
+            const data = imageData.data;
+            
+            // Collect all non-transparent pixels with their colors
+            const pixels: Array<{ r: number; g: number; b: number; brightness: number }> = [];
+            
+            for (let i = 0; i < data.length; i += 4) {
+              const alpha = data[i + 3];
+              // Only use pixels with sufficient opacity (text pixels)
+              if (alpha > 100) {
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+                // Calculate brightness to prioritize darker pixels (actual text)
+                const brightness = (r + g + b) / 3;
+                pixels.push({ r, g, b, brightness });
+              }
             }
-          }
-          
-          if (count > 0) {
-            r = Math.floor(r / count);
-            g = Math.floor(g / count);
-            b = Math.floor(b / count);
-            textColor = `rgb(${r}, ${g}, ${b})`;
+            
+            if (pixels.length > 0) {
+              // Sort by brightness (darkest first) and take the darkest 30% of pixels
+              // This filters out anti-aliasing edges which are lighter
+              pixels.sort((a, b) => a.brightness - b.brightness);
+              const darkestCount = Math.max(1, Math.floor(pixels.length * 0.3));
+              const darkestPixels = pixels.slice(0, darkestCount);
+              
+              // Calculate average of darkest pixels
+              let r = 0, g = 0, b = 0;
+              for (const pixel of darkestPixels) {
+                r += pixel.r;
+                g += pixel.g;
+                b += pixel.b;
+              }
+              
+              r = Math.floor(r / darkestPixels.length);
+              g = Math.floor(g / darkestPixels.length);
+              b = Math.floor(b / darkestPixels.length);
+              
+              textColor = `rgb(${r}, ${g}, ${b})`;
+              console.log('Canvas color sampled:', {
+                spanRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+                canvasRect: { left: canvasRect.left, top: canvasRect.top, width: displayedWidth, height: displayedHeight },
+                canvasCoords: { x: canvasX, y: canvasY, width: canvasWidth_scaled, height: canvasHeight_scaled },
+                sampleArea: { x: safeStartX, y: safeStartY, width: safeWidth, height: safeHeight },
+                scale: { x: scaleX, y: scaleY },
+                totalPixels: pixels.length,
+                darkestPixelsUsed: darkestPixels.length,
+                sampledColor: textColor,
+                brightnessRange: pixels.length > 0 ? {
+                  min: pixels[0].brightness,
+                  max: pixels[pixels.length - 1].brightness,
+                  avg: pixels.reduce((sum, p) => sum + p.brightness, 0) / pixels.length
+                } : null
+              });
+            } else {
+              console.warn('No valid pixels sampled from canvas');
+            }
+          } else {
+            console.warn('Sample area is out of bounds');
           }
         }
       } catch (e) {
@@ -1383,11 +1519,12 @@ export default function Home() {
       }
     }
     
-    // Fallback: Check for inline style color
+    // Fallback: Check for inline style color (only if canvas sampling failed)
     if (!textColor || textColor === 'rgb(255, 255, 255)' || textColor === 'white') {
       const inlineColor = (span as HTMLElement).style?.color;
-      if (inlineColor && inlineColor !== '' && inlineColor !== 'white') {
+      if (inlineColor && inlineColor !== '' && inlineColor !== 'white' && inlineColor !== 'rgb(0, 0, 0)') {
         textColor = inlineColor;
+        console.log('Using inline color:', inlineColor);
       }
     }
     
@@ -1396,6 +1533,7 @@ export default function Home() {
       const fillAttr = span.getAttribute('fill');
       if (fillAttr && fillAttr !== 'none' && fillAttr !== 'transparent' && fillAttr !== 'white') {
         textColor = fillAttr;
+        console.log('Using fill attribute:', fillAttr);
       }
     }
     
@@ -1404,6 +1542,17 @@ export default function Home() {
       const computedFill = computedStyle.fill;
       if (computedFill && computedFill !== 'none' && computedFill !== 'transparent' && computedFill !== 'rgb(255, 255, 255)' && computedFill !== 'white') {
         textColor = computedFill;
+        console.log('Using computed fill:', computedFill);
+      }
+    }
+    
+    // Last resort: Use computedStyle.color but log a warning (avoid default blue)
+    if (!textColor || textColor === 'rgb(255, 255, 255)' || textColor === 'white') {
+      const computedColor = computedStyle.color;
+      // Only use if it's not a default/system color (blue is rgb(0, 0, 238) in some browsers)
+      if (computedColor && computedColor !== 'rgb(0, 0, 0)' && computedColor !== 'rgb(0, 0, 238)' && computedColor !== 'rgb(0, 0, 255)') {
+        textColor = computedColor;
+        console.warn('Using computedStyle.color as last resort:', computedColor);
       }
     }
     
@@ -1703,6 +1852,7 @@ export default function Home() {
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
       
       // Draw a white rectangle to cover the old text (with some padding)
+      // This actually removes the old text from the PDF
       const padding = fontSize * 0.2;
       page.drawRectangle({
         x: pdfX - padding,
@@ -1713,13 +1863,67 @@ export default function Home() {
         opacity: 1,
       });
       
-      // Draw the new text
+      // Extract color from editingStyles and convert to RGB
+      let textColorRgb = rgb(0, 0, 0); // Default to black
+      console.log('Extracting color from editingStyles.color:', editingStyles.color);
+      
+      if (editingStyles.color) {
+        try {
+          // Parse color string (e.g., "rgb(255, 0, 0)" or "#ff0000")
+          const colorStr = editingStyles.color.trim();
+          console.log('Parsing color string:', colorStr);
+          
+          if (colorStr.startsWith('rgb')) {
+            // Extract RGB values from "rgb(r, g, b)" or "rgba(r, g, b, a)"
+            const match = colorStr.match(/\d+/g);
+            if (match && match.length >= 3) {
+              const r = parseInt(match[0]) / 255;
+              const g = parseInt(match[1]) / 255;
+              const b = parseInt(match[2]) / 255;
+              textColorRgb = rgb(r, g, b);
+              console.log('Parsed RGB color:', { r, g, b, original: colorStr });
+            }
+          } else if (colorStr.startsWith('#')) {
+            // Hex color - handle both 3 and 6 digit hex
+            const hex = colorStr.replace('#', '');
+            let r, g, b;
+            
+            if (hex.length === 3) {
+              // 3-digit hex (e.g., #000)
+              r = parseInt(hex[0] + hex[0], 16) / 255;
+              g = parseInt(hex[1] + hex[1], 16) / 255;
+              b = parseInt(hex[2] + hex[2], 16) / 255;
+            } else if (hex.length === 6) {
+              // 6-digit hex (e.g., #000000)
+              r = parseInt(hex.substring(0, 2), 16) / 255;
+              g = parseInt(hex.substring(2, 4), 16) / 255;
+              b = parseInt(hex.substring(4, 6), 16) / 255;
+            } else {
+              throw new Error('Invalid hex color format');
+            }
+            
+            textColorRgb = rgb(r, g, b);
+            console.log('Parsed hex color:', { r, g, b, original: colorStr });
+          } else {
+            // Try to parse named colors or other formats
+            console.warn('Unknown color format, using black:', colorStr);
+          }
+        } catch (e) {
+          console.warn('Could not parse color, using black:', e, 'Color string:', editingStyles.color);
+        }
+      } else {
+        console.warn('No color in editingStyles, using black');
+      }
+      
+      console.log('Final text color RGB:', textColorRgb);
+      
+      // Draw the new text with the extracted color
       page.drawText(editingText, {
         x: pdfX,
         y: pdfY - fontSize,
         size: fontSize,
         font: font,
-        color: rgb(0, 0, 0),
+        color: textColorRgb,
       });
       
       // Save PDF
@@ -2573,7 +2777,9 @@ export default function Home() {
                 {/* Diff Overlay */}
                 {diffMode && diffsReady && textDiffs.length > 0 && (
                   <>
-                    {textDiffs.map((diff, index) => {
+                    {textDiffs
+                      .filter(diff => !diff.page || diff.page === pageNumber) // Filter by current page for annotation diffs
+                      .map((diff, index) => {
                       // Get the page element to calculate correct position
                       const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
                       const pageRect = pageElement?.getBoundingClientRect();
@@ -2599,10 +2805,10 @@ export default function Home() {
                             width: `${diff.width}px`,
                             height: `${diff.height}px`,
                             backgroundColor:
-                              diff.type === 'added' ? 'rgba(34, 197, 94, 0.3)' :
-                              diff.type === 'deleted' ? 'rgba(239, 68, 68, 0.3)' :
-                              'rgba(251, 191, 36, 0.3)',
-                            border: `2px solid ${
+                              diff.type === 'added' ? (diff.isAnnotation ? 'rgba(34, 197, 94, 0.4)' : 'rgba(34, 197, 94, 0.3)') :
+                              diff.type === 'deleted' ? (diff.isAnnotation ? 'rgba(239, 68, 68, 0.4)' : 'rgba(239, 68, 68, 0.3)') :
+                              (diff.isAnnotation ? 'rgba(251, 191, 36, 0.4)' : 'rgba(251, 191, 36, 0.3)'),
+                            border: `2px ${diff.isAnnotation ? 'dashed' : 'solid'} ${
                               diff.type === 'added' ? '#22c55e' :
                               diff.type === 'deleted' ? '#ef4444' :
                               '#fbbf24'
@@ -2645,7 +2851,7 @@ export default function Home() {
                       }}
                       onClick={(e) => e.stopPropagation()}
                       onMouseDown={(e) => e.stopPropagation()}
-                      className="w-full px-2 py-1 border-2 border-blue-500 rounded shadow-lg bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-2 py-1 border-2 border-blue-500 rounded shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                       style={{
                         fontSize: editingStyles.fontSize,
                         fontFamily: editingStyles.fontFamily,
@@ -2659,10 +2865,26 @@ export default function Home() {
                         // Force the color to be applied - override any CSS
                         WebkitTextFillColor: editingStyles.color || '#000000',
                         caretColor: editingStyles.color || '#000000',
-                        // Preserve background if text has one
-                        backgroundColor: editingStyles.backgroundColor === 'transparent' || !editingStyles.backgroundColor 
-                          ? 'white' 
-                          : editingStyles.backgroundColor,
+                        // White background unless text color is white/light
+                        backgroundColor: (() => {
+                          const color = editingStyles.color || '#000000';
+                          // Check if color is white or very light
+                          if (color.includes('rgb')) {
+                            const match = color.match(/\d+/g);
+                            if (match && match.length >= 3) {
+                              const r = parseInt(match[0]);
+                              const g = parseInt(match[1]);
+                              const b = parseInt(match[2]);
+                              // If color is white or very light (close to white), use dark background
+                              if (r > 240 && g > 240 && b > 240) {
+                                return '#1a1a1a'; // Dark background for white text
+                              }
+                            }
+                          } else if (color === 'white' || color === '#ffffff' || color === '#fff') {
+                            return '#1a1a1a'; // Dark background for white text
+                          }
+                          return 'white'; // White background for colored/dark text
+                        })(),
                       } as React.CSSProperties}
                     />
                     <div className="mt-1 flex gap-2 text-xs">

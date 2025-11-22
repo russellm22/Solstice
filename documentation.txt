@@ -1,0 +1,250 @@
+================================================================================
+PDF EDITOR - DESIGN DOCUMENTATION
+================================================================================
+
+TECHNOLOGY STACK
+----------------
+- Next.js 15: React framework with SSR/SSG support
+- React 18: UI library
+- TypeScript: Type safety
+- Tailwind CSS: Utility-first styling
+- react-pdf (v9.1.0): PDF rendering and display
+- pdf-lib (v1.17.1): PDF manipulation and editing
+- diff-match-patch (v1.0.5): Text diffing algorithm
+
+================================================================================
+CORE FUNCTIONALITY
+================================================================================
+
+1. PDF UPLOAD
+-------------
+DESCRIPTION:
+Users can upload PDFs via drag-and-drop or file input. The PDF is loaded 
+using pdf-lib to create a PDFDocument instance, then converted to a base64 
+data URL for display in react-pdf. An initial version (V1) is automatically 
+created.
+
+IMPLEMENTATION:
+- File input handler converts File to ArrayBuffer
+- pdf-lib loads the PDF: PDFDocument.load(arrayBuffer)
+- Base64 data URL created for react-pdf rendering
+- Initial version stored with metadata (version: 1, timestamp, message)
+
+LIBRARIES:
+- pdf-lib: PDF parsing and loading
+- react-pdf: PDF rendering in browser
+
+IMPROVEMENTS:
+- Add file size validation and limits
+- Support for password-protected PDFs
+- Progress indicator for large file uploads
+- Multiple file upload support
+- Cloud storage integration (S3, Google Drive, etc.)
+
+
+2. TEXT EDITING
+---------------
+DESCRIPTION:
+Users can click on text in the PDF to edit it inline. The system extracts 
+text coordinates from react-pdf's text layer, displays an overlay input 
+field matching the original text style, then uses pdf-lib to draw a white 
+rectangle over the old text and render the new text with preserved font 
+properties.
+
+IMPLEMENTATION:
+- Text layer spans are made clickable
+- On click: extract text content, position, font size, color
+- Overlay input field positioned over original text
+- pdf-lib draws white rectangle + new text on PDF page
+- Edited regions tracked to hide original text layer spans
+- Canvas pixel sampling used to extract text color
+
+LIBRARIES:
+- react-pdf: Text layer extraction and coordinate mapping
+- pdf-lib: PDF modification (drawRectangle, drawText)
+
+IMPROVEMENTS:
+- Better font matching (currently uses Helvetica fallback)
+- Support for multi-line text editing
+- Undo/redo functionality
+- Batch text replacements
+- Spell checking integration
+- Better handling of rotated/scaled text
+- Font embedding from original PDF
+
+
+3. ANNOTATIONS
+-------------
+DESCRIPTION:
+Four annotation types: highlights (yellow rectangles), sticky notes 
+(text boxes with icons), free text boxes, and redactions (black rectangles). 
+Users draw annotations by clicking and dragging. Annotations are stored in 
+state and rendered on the PDF using pdf-lib.
+
+IMPLEMENTATION:
+- Annotation mode selector (highlight, note, textbox, redact)
+- Mouse down/move/up handlers for drawing
+- Coordinates converted from screen to PDF coordinates
+- pdf-lib draws rectangles/text on PDF pages
+- Annotations stored with metadata (type, page, coordinates, color, text)
+
+LIBRARIES:
+- pdf-lib: Drawing annotations on PDF pages
+
+IMPROVEMENTS:
+- Annotation editing (move, resize, delete)
+- Annotation styles (colors, opacity, line thickness)
+- Annotation search and filtering
+- Annotation comments/threads
+- Export annotations as separate layer
+- Import annotations from other PDFs
+- Annotation templates
+- Freehand drawing tool
+
+
+4. VERSION CONTROL
+------------------
+DESCRIPTION:
+Users can commit versions with messages. Each version stores the complete 
+PDF state (as ArrayBuffer) and associated annotations. Users can switch 
+between versions, viewing the PDF state at each commit point.
+
+IMPLEMENTATION:
+- Version state: Array of version objects (id, version number, message, 
+  timestamp, pdfData ArrayBuffer, pdfDoc, annotations)
+- Commit: Save current pdfDoc state as new version
+- Switch: Load version's pdfData and update fileUrl
+- Version list UI with navigation arrows
+
+LIBRARIES:
+- pdf-lib: PDF state serialization (pdfDoc.save())
+
+IMPROVEMENTS:
+- Branching/merging support
+- Version tags and labels
+- Version comparison preview
+- Rollback functionality
+- Version history search
+- Automatic versioning on changes
+- Version metadata (author, changeset summary)
+- Diff statistics (lines added/deleted)
+
+
+5. DIFF COMPARISON
+------------------
+DESCRIPTION:
+Compare two versions side-by-side with visual highlights showing text 
+differences. Uses diff-match-patch to compute character-level diffs, then 
+maps diffs back to PDF coordinates for overlay rendering.
+
+IMPLEMENTATION:
+- Load both versions sequentially
+- Extract text spans with coordinates from react-pdf text layer
+- diff-match-patch compares full text strings
+- Map diff operations back to span coordinates
+- Render colored overlays (green=added, red=deleted, yellow=modified)
+- Coordinate system accounts for page position and pan transform
+
+LIBRARIES:
+- diff-match-patch: Text diffing algorithm
+- react-pdf: Text extraction with coordinates
+- pdf-lib: PDF loading for comparison
+
+IMPROVEMENTS:
+- Side-by-side view (split screen)
+- Diff statistics and summary
+- Export diff report
+
+
+6. EXPORT ANNOTATED PDF
+-----------------------
+DESCRIPTION:
+Generate a new PDF with change log page at the front and inline callouts 
+on pages referencing version annotations. The exported PDF includes all 
+original pages plus a summary of all versions and their annotations.
+
+IMPLEMENTATION:
+- Create new PDFDocument with pdf-lib
+- Copy all pages from latest version
+- Generate change log page with version history
+- List all annotations per version with details
+- Add callout boxes on pages referencing annotations (V3-#4: Highlight)
+- Download as .pdf file
+
+LIBRARIES:
+- pdf-lib: PDF creation, page copying, text/rectangle drawing
+
+IMPROVEMENTS:
+- Customizable change log format
+- Export options (with/without annotations, specific pages)
+- Export as separate files (PDF + change log)
+- Export annotations as JSON/XML
+- PDF/A compliance option
+- Watermarking support
+- Page numbering customization
+- Table of contents generation
+
+
+================================================================================
+TECHNICAL ARCHITECTURE
+================================================================================
+
+COORDINATE SYSTEMS
+------------------
+- Screen coordinates: Mouse/click positions relative to viewport
+- Page coordinates: Positions relative to PDF page element
+- PDF coordinates: Native PDF coordinate system (points, bottom-up Y-axis)
+- Transform handling: CSS transforms for pan/zoom, coordinate conversion
+
+STATE MANAGEMENT
+----------------
+- React useState hooks for component state
+- Version state stored in memory (ArrayBuffer)
+- No persistent storage (all in-memory)
+- State includes: file, PDF document, versions, annotations, edit state
+
+RENDERING PIPELINE
+------------------
+1. PDF loaded → pdf-lib creates PDFDocument
+2. PDFDocument → ArrayBuffer → base64 data URL
+3. react-pdf renders PDF with canvas + text layer
+4. User interactions → state updates → PDF modifications
+5. Modified PDF → new ArrayBuffer → updated data URL → re-render
+
+PERFORMANCE CONSIDERATIONS
+--------------------------
+- Large PDFs: ArrayBuffer stored in memory (potential memory issues)
+- Text extraction: Retry logic with delays for async rendering
+- Diff comparison: Sequential loading (could be parallelized)
+- Re-rendering: Key prop on Document component forces remount
+
+================================================================================
+KNOWN LIMITATIONS & FUTURE WORK
+================================================================================
+
+CURRENT LIMITATIONS:
+- No persistent storage (versions lost on page refresh)
+- Text editing limited to single-line replacements
+- Font matching uses fallback (Helvetica)
+- Diff comparison can be slow for large PDFs
+- Coordinate mapping accuracy depends on PDF structure
+- No undo/redo functionality
+- Annotations cannot be edited after creation
+- No multi-page editing support
+
+RECOMMENDED IMPROVEMENTS:
+1. Backend storage for versions (database + file storage)
+2. WebSocket support for real-time collaboration
+3. Advanced text editing (multi-line, rich text)
+4. Better font handling (embed original fonts)
+5. Performance optimization (virtual scrolling, lazy loading)
+6. Accessibility improvements (keyboard navigation, screen readers)
+7. Mobile responsiveness
+8. PDF form field support
+9. Digital signatures
+10. OCR integration for scanned PDFs
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================
+
