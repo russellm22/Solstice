@@ -1,0 +1,159 @@
+================================================================================
+CODEBASE REDUNDANCY ANALYSIS
+================================================================================
+
+IDENTIFIED REDUNDANCIES:
+------------------------
+
+1. UNUSED FUNCTION: extractTextFromPdfLib
+   Location: app/page.tsx:531-545
+   Issue: Function is defined but never called. It was likely intended as an 
+          alternative to extractTextFromCurrentPdf but was never implemented.
+   Recommendation: Remove this function entirely.
+
+2. REPEATED DIFF STATE CLEARING PATTERN
+   Locations: Multiple (lines 519-521, 792-795, 1264-1266, 2583-2584, 2640-2643, 2668-2669)
+   Pattern:
+     setDiffMode(false);
+     setDiffVersions({ v1: null, v2: null });
+     setTextDiffs([]);
+     setDiffsReady(false);
+   Recommendation: Create a helper function:
+     const clearDiffState = () => {
+       setDiffMode(false);
+       setDiffVersions({ v1: null, v2: null });
+       setTextDiffs([]);
+       setDiffsReady(false);
+     };
+
+3. DUPLICATE RETRY LOGIC FOR TEXT EXTRACTION
+   Locations: app/page.tsx:717-724 and 769-776
+   Issue: Identical retry logic for extracting text from v1 and v2
+   Pattern:
+     let text = await extractTextFromCurrentPdf(url);
+     let retries = 0;
+     while (text.length === 0 && retries < 3) {
+       console.log(`Retrying text extraction (attempt ${retries + 1})...`);
+       await new Promise(resolve => setTimeout(resolve, 1500));
+       text = await extractTextFromCurrentPdf(url);
+       retries++;
+     }
+   Recommendation: Extract to helper function:
+     const extractTextWithRetry = async (url: string, version: string) => {
+       let text = await extractTextFromCurrentPdf(url);
+       let retries = 0;
+       while (text.length === 0 && retries < 3) {
+         console.log(`Retrying ${version} text extraction (attempt ${retries + 1})...`);
+         await new Promise(resolve => setTimeout(resolve, 1500));
+         text = await extractTextFromCurrentPdf(url);
+         retries++;
+       }
+       return text;
+     };
+
+4. REPEATED COORDINATE CONVERSION LOGIC
+   Locations: Multiple places (saveTextEdit, handleTextClick, diff overlay rendering)
+   Issue: Similar coordinate conversion code (screen to PDF, page-relative calculations)
+   Pattern: Calculating scaleX/scaleY, converting coordinates, handling page positions
+   Recommendation: Create utility functions:
+     - convertScreenToPdfCoords(screenX, screenY, pageElement, pdfPage)
+     - convertPdfToScreenCoords(pdfX, pdfY, pageElement, pdfPage)
+     - getPageRelativeCoords(element, pageElement)
+
+5. REPEATED PDF LOADING AND URL UPDATE PATTERN
+   Locations: commitVersion, switchVersion, saveTextEdit, compareVersions
+   Pattern:
+     const pdfBytes = await pdfDoc.save();
+     const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+     if (fileUrl) URL.revokeObjectURL(fileUrl);
+     const newUrl = URL.createObjectURL(blob);
+     setFileUrl(newUrl);
+   Recommendation: Create helper function:
+     const updatePdfFromDoc = async (pdfDoc: any, filename?: string) => {
+       const pdfBytes = await pdfDoc.save();
+       const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+       if (fileUrl) URL.revokeObjectURL(fileUrl);
+       const newUrl = URL.createObjectURL(blob);
+       setFileUrl(newUrl);
+       if (filename) {
+         const newFile = new File([blob], filename, { type: 'application/pdf' });
+         setFile(newFile);
+       }
+       return { blob, url: newUrl };
+     };
+
+6. REPEATED PDF DOCUMENT RELOADING
+   Locations: saveTextEdit, commitVersion
+   Pattern:
+     const { PDFDocument } = await import('pdf-lib');
+     const updatedPdfDoc = await PDFDocument.load(await blob.arrayBuffer());
+     setPdfDoc(updatedPdfDoc);
+   Recommendation: Can be integrated into updatePdfFromDoc helper above.
+
+7. SIMILAR WAIT/DELAY PATTERNS
+   Locations: Multiple places use setTimeout with Promise
+   Pattern: await new Promise(resolve => setTimeout(resolve, delay))
+   Recommendation: Create utility:
+     const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+8. REPEATED COLOR PARSING LOGIC
+   Locations: saveTextEdit (lines 1795-1841) and handleTextClick (color extraction)
+   Issue: Color parsing/conversion logic could be centralized
+   Recommendation: Create utility functions:
+     - parseColorToRgb(colorString: string): { r: number, g: number, b: number }
+     - rgbToPdfLibRgb(rgb: string): RGB object for pdf-lib
+
+9. DUPLICATE PAGE ELEMENT QUERIES
+   Locations: Many functions query for '.react-pdf__Page' repeatedly
+   Pattern: pageContainerRef.current?.querySelector('.react-pdf__Page')
+   Recommendation: Create helper:
+     const getPageElement = () => pageContainerRef.current?.querySelector('.react-pdf__Page');
+     const getTextLayer = () => pageContainerRef.current?.querySelector('.react-pdf__Page__textContent');
+     const getCanvas = () => getPageElement()?.querySelector('canvas');
+
+10. REPEATED PDF RENDERING WAIT LOGIC
+    Locations: compareVersions (multiple places)
+    Pattern: Waiting for PDF to load, checking canvas, retrying
+    Recommendation: Create helper:
+      const waitForPdfRender = async (maxAttempts = 20) => {
+        for (let i = 0; i < maxAttempts; i++) {
+          const pageElement = getPageElement();
+          const canvas = getCanvas();
+          if (canvas && canvas.width > 0) return true;
+          await delay(200);
+        }
+        return false;
+      };
+
+
+PRIORITY RECOMMENDATIONS:
+-------------------------
+
+HIGH PRIORITY (Quick wins, reduces bugs):
+1. Remove extractTextFromPdfLib (unused)
+2. Create clearDiffState helper
+3. Create extractTextWithRetry helper
+4. Create delay utility function
+
+MEDIUM PRIORITY (Improves maintainability):
+5. Create coordinate conversion utilities
+6. Create updatePdfFromDoc helper
+7. Create PDF element query helpers
+
+LOW PRIORITY (Nice to have):
+8. Create color parsing utilities
+9. Create waitForPdfRender helper
+
+
+ESTIMATED IMPACT:
+-----------------
+- Code reduction: ~200-300 lines
+- Improved maintainability: Centralized logic reduces bugs
+- Better readability: Helper functions make code more self-documenting
+- Easier testing: Utilities can be unit tested independently
+
+
+================================================================================
+END OF ANALYSIS
+================================================================================
+

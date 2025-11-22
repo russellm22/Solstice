@@ -1236,25 +1236,42 @@ export default function Home() {
       setDiffMode(true);
       setDiffsReady(false); // Mark as not ready yet
       
-      // Wait for PDF to be fully rendered before showing diffs
-      // Use requestAnimationFrame to ensure DOM is updated
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          // Verify PDF is ready
+      // Set the diffs immediately so they're ready when PDF renders
+      setTextDiffs(diffHighlights);
+      
+      // Wait for PDF to be fully rendered before marking as ready
+      // Use a more robust waiting mechanism
+      const waitForPdfReady = async () => {
+        let attempts = 0;
+        const maxAttempts = 30; // Wait up to 6 seconds
+        
+        while (attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
           const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
           const canvas = pageElement?.querySelector('canvas');
-          if (canvas && canvas.width > 0) {
-            setTextDiffs(diffHighlights);
-            setDiffsReady(true);
-          } else {
-            // If not ready, wait a bit more
-            setTimeout(() => {
-              setTextDiffs(diffHighlights);
+          const textLayer = pageElement?.querySelector('.react-pdf__Page__textContent');
+          
+          // Check if PDF is fully rendered (canvas has content and text layer exists)
+          if (canvas && canvas.width > 0 && textLayer) {
+            const spans = textLayer.querySelectorAll('span');
+            // If we have text layer with spans, PDF is ready
+            if (spans.length > 0) {
+              console.log('PDF is ready, showing diffs');
               setDiffsReady(true);
-            }, 300);
+              return;
+            }
           }
-        });
-      });
+          
+          attempts++;
+        }
+        
+        // Even if we couldn't verify, show the diffs anyway
+        console.warn('PDF ready check timed out, showing diffs anyway');
+        setDiffsReady(true);
+      };
+      
+      waitForPdfReady();
       
       // Don't restore original - show version 2 with diffs
       
@@ -1637,6 +1654,7 @@ export default function Home() {
     // Only run on client side and when mounted
     if (typeof window === 'undefined' || !isMounted) return;
     
+    // Trigger comparison when both versions are selected and we don't have diffs yet
     if (diffMode && diffVersions.v1 && diffVersions.v2 && diffVersions.v1 !== diffVersions.v2 && textDiffs.length === 0) {
       console.log('Auto-triggering comparison:', diffVersions.v1, 'vs', diffVersions.v2);
       compareVersions(diffVersions.v1, diffVersions.v2).catch((error) => {
@@ -1645,6 +1663,40 @@ export default function Home() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diffMode, diffVersions.v1, diffVersions.v2, isMounted]);
+  
+  // Ensure diffs are shown when PDF is ready and we have diffs but they're not ready yet
+  useEffect(() => {
+    if (!diffMode || !textDiffs.length || diffsReady) return;
+    
+    // Check if PDF is ready and mark diffs as ready
+    const checkAndShowDiffs = async () => {
+      let attempts = 0;
+      while (attempts < 20) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+        const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
+        const canvas = pageElement?.querySelector('canvas');
+        const textLayer = pageElement?.querySelector('.react-pdf__Page__textContent');
+        
+        if (canvas && canvas.width > 0 && textLayer) {
+          const spans = textLayer.querySelectorAll('span');
+          if (spans.length > 0) {
+            console.log('PDF ready, marking diffs as ready');
+            setDiffsReady(true);
+            return;
+          }
+        }
+        attempts++;
+      }
+      
+      // If we can't verify, show anyway after timeout
+      console.warn('PDF ready check timed out, showing diffs anyway');
+      setDiffsReady(true);
+    };
+    
+    checkAndShowDiffs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileUrl, textDiffs.length, diffMode]);
 
   // Helper function to hide spans that overlap with edited regions
   const hideEditedSpans = useCallback(() => {
