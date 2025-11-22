@@ -1231,47 +1231,13 @@ export default function Home() {
       }
       
       // Keep version 2 loaded (newer version)
-      // Set diffs and mode together to ensure proper rendering
+      // Set diffs and mode together - show immediately
       setDiffVersions({ v1, v2 });
       setDiffMode(true);
-      setDiffsReady(false); // Mark as not ready yet
-      
-      // Set the diffs immediately so they're ready when PDF renders
       setTextDiffs(diffHighlights);
+      setDiffsReady(true); // Mark as ready immediately - rendering will handle positioning
       
-      // Wait for PDF to be fully rendered before marking as ready
-      // Use a more robust waiting mechanism
-      const waitForPdfReady = async () => {
-        let attempts = 0;
-        const maxAttempts = 30; // Wait up to 6 seconds
-        
-        while (attempts < maxAttempts) {
-          await new Promise(resolve => setTimeout(resolve, 200));
-          
-          const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
-          const canvas = pageElement?.querySelector('canvas');
-          const textLayer = pageElement?.querySelector('.react-pdf__Page__textContent');
-          
-          // Check if PDF is fully rendered (canvas has content and text layer exists)
-          if (canvas && canvas.width > 0 && textLayer) {
-            const spans = textLayer.querySelectorAll('span');
-            // If we have text layer with spans, PDF is ready
-            if (spans.length > 0) {
-              console.log('PDF is ready, showing diffs');
-              setDiffsReady(true);
-              return;
-            }
-          }
-          
-          attempts++;
-        }
-        
-        // Even if we couldn't verify, show the diffs anyway
-        console.warn('PDF ready check timed out, showing diffs anyway');
-        setDiffsReady(true);
-      };
-      
-      waitForPdfReady();
+      console.log('Diffs set, ready to display:', diffHighlights.length, 'highlights');
       
       // Don't restore original - show version 2 with diffs
       
@@ -1664,39 +1630,22 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diffMode, diffVersions.v1, diffVersions.v2, isMounted]);
   
-  // Ensure diffs are shown when PDF is ready and we have diffs but they're not ready yet
+  // Force re-render of diff overlay when PDF loads (fileUrl changes)
+  // This ensures diffs appear even if PDF wasn't ready when they were first set
   useEffect(() => {
-    if (!diffMode || !textDiffs.length || diffsReady) return;
-    
-    // Check if PDF is ready and mark diffs as ready
-    const checkAndShowDiffs = async () => {
-      let attempts = 0;
-      while (attempts < 20) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-        
-        const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
-        const canvas = pageElement?.querySelector('canvas');
-        const textLayer = pageElement?.querySelector('.react-pdf__Page__textContent');
-        
-        if (canvas && canvas.width > 0 && textLayer) {
-          const spans = textLayer.querySelectorAll('span');
-          if (spans.length > 0) {
-            console.log('PDF ready, marking diffs as ready');
-            setDiffsReady(true);
-            return;
-          }
-        }
-        attempts++;
-      }
+    if (diffMode && textDiffs.length > 0 && fileUrl) {
+      // Small delay to ensure PDF has rendered
+      const timer = setTimeout(() => {
+        // Force a state update to trigger re-render of diff overlay
+        // This is a no-op but triggers React to re-check the rendering conditions
+        setDiffsReady(prev => !prev);
+        setTimeout(() => setDiffsReady(prev => !prev), 0);
+      }, 500);
       
-      // If we can't verify, show anyway after timeout
-      console.warn('PDF ready check timed out, showing diffs anyway');
-      setDiffsReady(true);
-    };
-    
-    checkAndShowDiffs();
+      return () => clearTimeout(timer);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileUrl, textDiffs.length, diffMode]);
+  }, [fileUrl, diffMode]);
 
   // Helper function to hide spans that overlap with edited regions
   const hideEditedSpans = useCallback(() => {
@@ -2827,7 +2776,7 @@ export default function Home() {
                 )}
 
                 {/* Diff Overlay */}
-                {diffMode && diffsReady && textDiffs.length > 0 && (
+                {diffMode && textDiffs.length > 0 && (
                   <>
                     {textDiffs
                       .filter(diff => !diff.page || diff.page === pageNumber) // Filter by current page for annotation diffs
@@ -2837,7 +2786,16 @@ export default function Home() {
                       const pageRect = pageElement?.getBoundingClientRect();
                       const containerRect = pageContainerRef.current?.getBoundingClientRect();
                       
-                      if (!pageRect || !containerRect) return null;
+                      // If page isn't ready yet, return null (will render on next update when PDF loads)
+                      if (!pageRect || !containerRect || !pageElement) {
+                        return null;
+                      }
+                      
+                      // Verify canvas exists and has content (PDF is rendered)
+                      const canvas = pageElement.querySelector('canvas');
+                      if (!canvas || canvas.width === 0) {
+                        return null;
+                      }
                       
                       // diff.x and diff.y are relative to the page element (from extractTextFromCurrentPdf)
                       // The page is inside a transformed div, so getBoundingClientRect() already includes the pan offset
