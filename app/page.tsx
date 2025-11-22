@@ -94,6 +94,17 @@ export default function Home() {
     isAnnotation?: boolean; // Flag to distinguish annotation diffs
   }>>([]);
   const [diffsReady, setDiffsReady] = useState(false);
+  const [diffRenderKey, setDiffRenderKey] = useState(0); // Force re-render key
+  const pendingDiffsRef = useRef<Array<{
+    type: 'added' | 'deleted' | 'modified';
+    text: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    page?: number;
+    isAnnotation?: boolean;
+  }> | null>(null); // Store diffs until PDF is ready
   const pageContainerRef = useRef<HTMLDivElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
   const annotationCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -111,8 +122,62 @@ export default function Home() {
   }, []);
 
   const onDocumentLoadSuccess = ({ numPages }: { numPages: number }) => {
+    console.log('onDocumentLoadSuccess called, numPages:', numPages);
+    console.log('pendingDiffsRef.current:', pendingDiffsRef.current?.length || 'null');
+    console.log('diffMode:', diffMode);
+    
     setNumPages(numPages);
     setPageNumber(1);
+    
+    // If we have pending diffs, wait a bit for the page to render, then set them
+    // Don't check diffMode here - it might not be updated yet due to async state updates
+    if (pendingDiffsRef.current) {
+      console.log('PDF Document loaded, waiting for page render before setting diffs...');
+      console.log('Pending diffs count:', pendingDiffsRef.current.length);
+      
+      // Wait for the page element and canvas to be ready
+      const waitForPageRender = async () => {
+        let attempts = 0;
+        while (attempts < 30) {
+          const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
+          const canvas = pageElement?.querySelector('canvas');
+          const textLayer = pageElement?.querySelector('.react-pdf__Page__textContent');
+          
+          console.log(`Attempt ${attempts + 1}: pageElement:`, !!pageElement, 'canvas:', !!canvas, 'canvas.width:', canvas?.width, 'textLayer:', !!textLayer);
+          
+          if (pageElement && canvas && canvas.width > 0 && textLayer) {
+            const diffs = pendingDiffsRef.current;
+            if (diffs) {
+              console.log('✓ Page rendered, setting pending diffs:', diffs.length);
+              setTextDiffs(diffs);
+              setDiffsReady(true);
+              setDiffRenderKey(prev => prev + 1);
+              pendingDiffsRef.current = null;
+              return;
+            }
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 100));
+          attempts++;
+        }
+        
+        // Fallback: set diffs anyway after timeout
+        const diffs = pendingDiffsRef.current;
+        if (diffs) {
+          console.log('⚠ Timeout reached, setting diffs anyway:', diffs.length);
+          setTextDiffs(diffs);
+          setDiffsReady(true);
+          setDiffRenderKey(prev => prev + 1);
+          pendingDiffsRef.current = null;
+        } else {
+          console.log('⚠ Timeout reached but no diffs to set');
+        }
+      };
+      
+      waitForPageRender();
+    } else {
+      console.log('No pending diffs to set');
+    }
   };
 
   const loadPdfWithLib = async (file: File) => {
@@ -1218,26 +1283,38 @@ export default function Home() {
       
       console.log('Found', diffHighlights.length, 'differences (text + annotations)');
       
-      // Ensure version 2 is fully loaded and rendered before setting diffs
-      // Wait a bit more to ensure the PDF is fully rendered
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // Verify the PDF is still loaded
-      const finalPageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
-      const finalCanvas = finalPageElement?.querySelector('canvas');
-      if (!finalCanvas || finalCanvas.width === 0) {
-        console.warn('PDF not fully rendered when setting diffs, waiting more...');
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-      
       // Keep version 2 loaded (newer version)
-      // Set diffs and mode together - show immediately
+      // Store diffs FIRST in ref before changing fileUrl
+      // This ensures they're available when onDocumentLoadSuccess fires
+      pendingDiffsRef.current = diffHighlights;
+      console.log('✓ Diffs stored in ref:', diffHighlights.length, 'highlights');
+      
+      // Set mode and versions
       setDiffVersions({ v1, v2 });
       setDiffMode(true);
-      setTextDiffs(diffHighlights);
-      setDiffsReady(true); // Mark as ready immediately - rendering will handle positioning
+      setDiffsReady(false);
       
-      console.log('Diffs set, ready to display:', diffHighlights.length, 'highlights');
+      console.log('✓ Diff mode set to true, fileUrl will change to trigger PDF reload');
+      
+      // Wait a moment for state to update, then check if PDF is already loaded
+      setTimeout(() => {
+        if (pendingDiffsRef.current) {
+          const pageElement = pageContainerRef.current?.querySelector('.react-pdf__Page');
+          const canvas = pageElement?.querySelector('canvas');
+          if (pageElement && canvas && canvas.width > 0) {
+            console.log('✓ PDF already loaded, setting diffs immediately');
+            const diffs = pendingDiffsRef.current;
+            if (diffs) {
+              setTextDiffs(diffs);
+              setDiffsReady(true);
+              setDiffRenderKey(prev => prev + 1);
+              pendingDiffsRef.current = null;
+            }
+          } else {
+            console.log('PDF not ready yet, waiting for onDocumentLoadSuccess...');
+          }
+        }
+      }, 500);
       
       // Don't restore original - show version 2 with diffs
       
@@ -1634,18 +1711,15 @@ export default function Home() {
   // This ensures diffs appear even if PDF wasn't ready when they were first set
   useEffect(() => {
     if (diffMode && textDiffs.length > 0 && fileUrl) {
-      // Small delay to ensure PDF has rendered
+      // Wait a bit for PDF to render, then force re-render
       const timer = setTimeout(() => {
-        // Force a state update to trigger re-render of diff overlay
-        // This is a no-op but triggers React to re-check the rendering conditions
-        setDiffsReady(prev => !prev);
-        setTimeout(() => setDiffsReady(prev => !prev), 0);
-      }, 500);
+        setDiffRenderKey(prev => prev + 1);
+      }, 800);
       
       return () => clearTimeout(timer);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileUrl, diffMode]);
+  }, [fileUrl, diffMode, textDiffs.length]);
 
   // Helper function to hide spans that overlap with edited regions
   const hideEditedSpans = useCallback(() => {
@@ -2777,7 +2851,7 @@ export default function Home() {
 
                 {/* Diff Overlay */}
                 {diffMode && textDiffs.length > 0 && (
-                  <>
+                  <div key={`diff-overlay-${diffRenderKey}`}>
                     {textDiffs
                       .filter(diff => !diff.page || diff.page === pageNumber) // Filter by current page for annotation diffs
                       .map((diff, index) => {
@@ -2788,12 +2862,6 @@ export default function Home() {
                       
                       // If page isn't ready yet, return null (will render on next update when PDF loads)
                       if (!pageRect || !containerRect || !pageElement) {
-                        return null;
-                      }
-                      
-                      // Verify canvas exists and has content (PDF is rendered)
-                      const canvas = pageElement.querySelector('canvas');
-                      if (!canvas || canvas.width === 0) {
                         return null;
                       }
                       
@@ -2829,7 +2897,7 @@ export default function Home() {
                         />
                       );
                     })}
-                  </>
+                  </div>
                 )}
 
                 {/* Text Edit Overlay */}
