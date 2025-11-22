@@ -109,6 +109,7 @@ export default function Home() {
       });
     }
   }, []);
+  
 
   const onDocumentLoadSuccess = ({ numPages }: { numPages: number }) => {
     setNumPages(numPages);
