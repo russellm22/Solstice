@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* PDF Text Editing Styles */
+.react-pdf__Page__textContent span[contenteditable="true"] {
+  position: relative !important;
+  display: inline-block !important;
+  min-width: 1px !important;
+  min-height: 1em !important;
+  outline: none !important;
+  background-color: transparent !important;
+}
+
+.react-pdf__Page__textContent span[contenteditable="true"]:focus {
+  outline: 2px solid rgba(59, 130, 246, 0.5) !important;
+  outline-offset: 1px !important;
+  background-color: rgba(59, 130, 246, 0.1) !important;
+  border-radius: 2px !important;
+  z-index: 20 !important;
+}
+
+.react-pdf__Page__textContent span[contenteditable="true"]:hover:not(:focus) {
+  background-color: rgba(59, 130, 246, 0.05) !important;
+  border-radius: 2px !important;
+}
+
+/* Hide scrollbar for version bar */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
